@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the first Flutter MVP for a local-first wrong-question notebook focused on junior/senior high school math and physics, with photo import, question selection, local library, eraser-only repair, AI/OCR mock results, and PDF export.
+**Goal:** Build the first Flutter iOS MVP for a local-first wrong-question notebook focused on junior/senior high school math and physics, with photo import, question selection, local library, eraser-only repair, AI/OCR mock results, and PDF export.
 
 **Architecture:** Implement a Flutter app at the repository root with a feature-first structure. The app stores images as files and keeps only necessary metadata in Drift/SQLite. Cloud OCR, image cleanup, and AI solution generation are represented by typed API interfaces plus mock services so the mobile workflow can be developed and tested before the real backend is connected.
 
@@ -16,6 +16,7 @@ This plan implements the Flutter client MVP only. It does not build the real Pad
 
 MVP constraints from the confirmed spec:
 
+- iOS-first MVP. Android is deferred until after the iOS workflow is validated.
 - Target users: junior/senior high school math and physics students, plus parent-assisted operation.
 - No account system and no cloud question library.
 - Four local tables only: `MistakeQuestion`, `OcrResult`, `AiSolution`, `PrintSet`.
@@ -33,7 +34,7 @@ The eraser canvas and large-image handling are the highest implementation risks.
 - Keep original and printable image paths separate from thumbnails.
 - If freehand eraser is not smooth enough on target devices, downgrade repair to simple white rectangle masking before building more UI around it.
 - Cloud mock services must mimic the real API shape: job returns URLs, client downloads or copies URL output into local files, and only local paths are written to the database.
-- E2E validation requires at least one configured platform first; missing Android SDK, simulator runtimes, or CocoaPods are environment blockers, not product logic blockers.
+- E2E validation targets iOS only for MVP. Missing iOS simulator runtime, CocoaPods, signing, or iPhone device access are environment blockers. Missing Android SDK is not an MVP blocker.
 
 ## File Structure
 
@@ -88,10 +89,10 @@ Expected: prints a Flutter SDK version. If it prints `command not found`, instal
 Run:
 
 ```bash
-flutter create --project-name cuotiben --org com.soyou --platforms=android,ios .
+flutter create --project-name cuotiben --org com.soyou --platforms=ios .
 ```
 
-Expected: Flutter creates `android/`, `ios/`, `lib/`, `test/`, and `pubspec.yaml` without deleting `docs/`.
+Expected: Flutter creates `ios/`, `lib/`, `test/`, and `pubspec.yaml` without deleting `docs/`. Do not generate `android/` for the MVP.
 
 - [ ] **Step 3: Add dependencies**
 
@@ -556,18 +557,16 @@ git commit -m "feat: validate eraser repair spike"
 
 **Files:**
 - Create: `lib/src/core/files/app_file_store.dart`
-- Modify: `android/app/src/main/AndroidManifest.xml`
 - Modify: `ios/Runner/Info.plist`
 - Modify: `lib/src/features/capture/capture_home_screen.dart`
 - Modify: `lib/src/features/capture/question_selection_screen.dart`
 
 - [ ] **Step 0: Configure and verify platform permissions**
 
-Configure camera and gallery permissions before wiring image import:
+Configure iOS camera and gallery permissions before wiring image import:
 
-- Android manifest includes camera permission and the media permissions needed for the selected picker/camera plugins on current Android versions.
 - iOS `Info.plist` includes `NSCameraUsageDescription` and `NSPhotoLibraryUsageDescription`.
-- Run a simulator/device smoke check for the permission prompt on whichever platform is configured locally.
+- Run an iOS simulator or iPhone smoke check for the permission prompt.
 
 - [ ] **Step 1: Write file-store unit test**
 
@@ -612,7 +611,7 @@ Expected: all tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add android/app/src/main/AndroidManifest.xml ios/Runner/Info.plist lib/src/core/files lib/src/features/capture test
+git add ios/Runner/Info.plist lib/src/core/files lib/src/features/capture test
 git commit -m "feat: add image import and question selection"
 ```
 
@@ -937,7 +936,7 @@ git commit -m "feat: add settings and mvp states"
 ### Task 14: End-To-End Validation
 
 **Files:**
-- Modify: only files that fail `flutter analyze`, `flutter test`, or Android/iOS smoke validation.
+- Modify: only files that fail `flutter analyze`, `flutter test`, or iOS smoke validation.
 
 - [ ] **Step 1: Run static analysis**
 
@@ -959,21 +958,9 @@ flutter test
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run at least one platform smoke test**
+- [ ] **Step 3: Run iOS smoke test**
 
-Choose the locally configured platform first. On this machine, `flutter doctor` must be clean enough for the chosen target before this step.
-
-For Android:
-
-Run:
-
-```bash
-flutter run -d android
-```
-
-Expected: app launches and supports import, save to library, eraser repair, AI mock solution, and PDF preview.
-
-For iOS:
+Run on an iOS simulator or iPhone device:
 
 Run:
 
@@ -981,11 +968,11 @@ Run:
 flutter run -d ios
 ```
 
-Expected: same workflow works on iOS simulator or device.
+Expected: app launches and supports import, save to library, eraser repair, AI mock solution, and PDF preview.
 
-- [ ] **Step 4: Record missing platform blockers**
+- [ ] **Step 4: Record iOS platform blockers**
 
-If either Android or iOS cannot be run because SDKs, simulator runtimes, CocoaPods, signing, or device access are missing, record the exact `flutter doctor` blocker in the task notes and continue with the configured platform. Do not claim dual-platform E2E is complete until both environments are available.
+If iOS cannot be run because simulator runtimes, CocoaPods, signing, or device access are missing, record the exact `flutter doctor` blocker in the task notes. Android SDK status is intentionally ignored for MVP validation.
 
 - [ ] **Step 5: Commit validation fixes**
 
