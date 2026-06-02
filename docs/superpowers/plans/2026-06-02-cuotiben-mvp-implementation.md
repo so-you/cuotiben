@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the first Flutter iOS MVP for a local-first wrong-question notebook focused on junior/senior high school math and physics, with photo import, question selection, local library, eraser-only repair, AI/OCR mock results, and PDF export.
+**Goal:** Build the first Flutter iOS MVP for a local-first wrong-question notebook focused on junior/senior high school math and physics, with photo import, question selection, local library, real PaddleOCR, mock image enhancement/cleaning/AI solution, eraser-only repair, and PDF export.
 
-**Architecture:** Implement a Flutter app at the repository root with a feature-first structure. The app stores images as files and keeps only necessary metadata in Drift/SQLite. Cloud OCR, image cleanup, and AI solution generation are represented by typed API interfaces plus mock services so the mobile workflow can be developed and tested before the real backend is connected.
+**Architecture:** Implement a Flutter app at the repository root with a feature-first structure. The app stores images as files and keeps only necessary metadata in Drift/SQLite. OCR uses the real PaddleOCR-VL API (direct connection with `.env`-managed token). Image enhancement, hand-removal, and AI solution generation are represented by typed API interfaces plus mock services so the mobile workflow can be developed and tested before the real backend is connected.
 
-**Tech Stack:** Flutter, Dart, Riverpod, go_router, Drift/SQLite, path_provider, image_picker, camera, dio, pdf, printing, flutter_markdown, flutter_test.
+**Tech Stack:** Flutter, Dart, Riverpod, go_router, Drift/SQLite, path_provider, image_picker, camera, dio, pdf, printing, flutter_markdown, flutter_dotenv, flutter_test.
 
 ---
 
 ## Scope
 
-This plan implements the Flutter client MVP only. It does not build the real PaddleOCR, image cleanup, or Doubao AI backend. Those integrations are represented by mock services and typed client contracts.
+This plan implements the Flutter client MVP. OCR uses the real PaddleOCR-VL API via direct connection (see `docs/superpowers/2026-06-02-mvp-paddleocr-技术方案.md`). Image enhancement, hand-removal cleaning, and Doubao AI solution generation remain mock services with typed client contracts. The real backend for those services is intentionally deferred.
 
 MVP constraints from the confirmed spec:
 
@@ -33,7 +33,8 @@ The eraser canvas and large-image handling are the highest implementation risks.
 - Generate a small thumbnail at import/save time and use thumbnails in list views.
 - Keep original and printable image paths separate from thumbnails.
 - If freehand eraser is not smooth enough on target devices, downgrade repair to simple white rectangle masking before building more UI around it.
-- Cloud mock services must mimic the real API shape: job returns URLs, client downloads or copies URL output into local files, and only local paths are written to the database.
+- PaddleOCR uses the real API. The OCR client submits images, polls job status, downloads JSONL results, and writes parsed text and metadata to the local database. Token is loaded from `.env` via `flutter_dotenv` and excluded from version control.
+- Cloud mock services (enhance, clean, AI) must mimic the real API shape: job returns URLs, client downloads or copies URL output into local files, and only local paths are written to the database.
 - E2E validation targets iOS only for MVP. Missing iOS simulator runtime, CocoaPods, signing, or iPhone device access are environment blockers. Missing Android SDK is not an MVP blocker.
 
 ## File Structure
@@ -50,8 +51,11 @@ Create or modify these paths:
 - `lib/src/core/files/image_derivatives.dart`: thumbnail and print-image derivative policy.
 - `lib/src/core/db/app_database.dart`: Drift database and four table definitions.
 - `lib/src/core/db/app_database_provider.dart`: Riverpod database provider.
+- `.env`: PaddleOCR token and URL (gitignored, loaded by flutter_dotenv).
 - `lib/src/core/api/cloud_processing_client.dart`: API interface and job/result models.
-- `lib/src/core/api/mock_cloud_processing_client.dart`: deterministic mock OCR/cleanup/AI service.
+- `lib/src/core/api/mock_cloud_processing_client.dart`: deterministic mock enhance/clean/AI service. OCR delegates to the real PaddleOCR client.
+- `lib/src/core/api/paddleocr_client.dart`: real PaddleOCR-VL API client (submit, poll, fetch, parse).
+- `lib/src/core/api/paddleocr_config.dart`: loads PaddleOCR token and URL from `.env`.
 - `lib/src/features/capture/capture_home_screen.dart`: mode selection and image import entry.
 - `lib/src/features/capture/question_selection_screen.dart`: manual/mocked question boxes and save-to-library action.
 - `lib/src/features/library/question_library_screen.dart`: filterable local question list.
@@ -63,6 +67,7 @@ Create or modify these paths:
 - `test/core/db/app_database_test.dart`
 - `test/core/files/image_derivatives_test.dart`
 - `test/core/api/mock_cloud_processing_client_test.dart`
+- `test/core/api/paddleocr_client_test.dart` (integration test, skipped in CI, requires network)
 - `test/features/print/print_layout_policy_test.dart`
 - `test/widget/app_navigation_test.dart`
 
@@ -99,11 +104,31 @@ Expected: Flutter creates `ios/`, `lib/`, `test/`, and `pubspec.yaml` without de
 Run:
 
 ```bash
-flutter pub add flutter_riverpod go_router drift sqlite3_flutter_libs path_provider path dio image_picker camera pdf printing flutter_markdown uuid
+flutter pub add flutter_riverpod go_router drift sqlite3_flutter_libs path_provider path dio image_picker camera pdf printing flutter_markdown flutter_dotenv uuid
 flutter pub add --dev build_runner drift_dev mocktail
 ```
 
 Expected: dependencies are added to `pubspec.yaml`.
+
+- [ ] **Step 3a: Configure .env for PaddleOCR**
+
+Create `.env` at the project root:
+
+```bash
+PADDLEOCR_TOKEN=32879366a89bcdd3be5e35f5abb23f4b4d387539
+PADDLEOCR_BASE_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+PADDLEOCR_MODEL=PaddleOCR-VL-1.6
+```
+
+Add `.env` to `.gitignore` — the token must never enter version control.
+
+Declare `.env` as an asset in `pubspec.yaml`:
+
+```yaml
+flutter:
+  assets:
+    - .env
+```
 
 - [ ] **Step 4: Run the scaffold test**
 
@@ -450,24 +475,35 @@ git commit -m "feat: add app shell and routes"
 
 ---
 
-### Task 5: Mock Cloud Processing Client
+### Task 5: Hybrid Cloud Client (Real PaddleOCR + Mock Enhance/Clean/AI)
 
 **Files:**
 - Create: `lib/src/core/api/cloud_processing_client.dart`
 - Create: `lib/src/core/api/mock_cloud_processing_client.dart`
+- Create: `lib/src/core/api/paddleocr_client.dart`
+- Create: `lib/src/core/api/paddleocr_config.dart`
+- Create: `.env` (if not created in Task 1 Step 3a)
 - Create: `test/core/api/mock_cloud_processing_client_test.dart`
+- Create: `test/core/api/paddleocr_client_test.dart`
 
-- [ ] **Step 1: Write mock API tests**
+- [ ] **Step 1: Write tests**
 
-Create tests asserting:
+Create mock client tests asserting:
 
-- `detectPaperQuestions` returns at least one box.
+- `detectPaperQuestions` returns at least one box, each with an optional `ocrText` and `suggestedQuestionNumber`.
 - `enhanceQuestion` returns a fake remote `enhancedImageUrl`.
 - `cleanQuestion` returns a fake remote `cleanedImageUrl` and confidence.
 - `downloadResultImage` copies a mock URL output into an app-local file and returns a local path.
 - `generateSolution` returns Markdown with fixed headings.
 
-- [ ] **Step 2: Implement API contracts**
+Create PaddleOCR client integration test (skipped in CI, requires network):
+
+- `submitJob` returns a valid jobId for a small test image.
+- `pollJob` completes within 120 seconds.
+- `fetchAndParseResult` extracts rawText and blocksJson from a JSONL response.
+- JSONL parsing handles missing fields gracefully (no crash on unexpected structure).
+
+- [ ] **Step 2: Implement API contracts and PaddleOCR config**
 
 Define typed Dart classes for:
 
@@ -480,9 +516,43 @@ ProcessingJobStatus
 RemoteImageResult
 ```
 
-The mock client must be deterministic and not call the network. It should still mimic the real integration shape: cloud steps produce URLs, then a download/copy step writes local files. This keeps the later real backend replacement focused on HTTP upload/download instead of changing app flow.
+Create `paddleocr_config.dart`:
 
-- [ ] **Step 3: Run tests**
+```dart
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+class PaddleOcrConfig {
+  static String get token => dotenv.env['PADDLEOCR_TOKEN'] ?? '';
+  static String get baseUrl => dotenv.env['PADDLEOCR_BASE_URL'] ?? '';
+  static String get model => dotenv.env['PADDLEOCR_MODEL'] ?? 'PaddleOCR-VL-1.6';
+}
+```
+
+- [ ] **Step 3: Implement PaddleOCR client**
+
+Create `paddleocr_client.dart` with:
+
+```dart
+class PaddleOcrClient {
+  final Dio _dio;
+  final String _token;
+
+  Future<String> submitJob(String imagePath, {OcrMode mode = OcrMode.local});
+  Future<OcrJobResult> pollJob(String jobId, {Duration timeout = const Duration(seconds: 120)});
+  Future<OcrParseResult> fetchAndParseResult(String jsonlUrl);
+  Future<OcrParseResult> processImage(String imagePath); // submit → poll → fetch
+}
+```
+
+Polling: every 5 seconds. Retry on network error 3× with exponential backoff (2s/4s/8s). Timeout at 120s. Multi-question mode submits the full paper image once; OCR text is split by question box coordinates downstream.
+
+- [ ] **Step 4: Implement mock client for non-OCR services**
+
+The mock client keeps `enhanceQuestion`, `cleanQuestion`, and `generateSolution` as deterministic mocks. The `ocrQuestion` method delegates to `PaddleOcrClient`.
+
+The mock client must be deterministic and not call the network for its mocked methods. It should still mimic the real integration shape: cloud steps produce URLs, then a download/copy step writes local files.
+
+- [ ] **Step 5: Run tests**
 
 Run:
 
@@ -490,13 +560,19 @@ Run:
 flutter test test/core/api/mock_cloud_processing_client_test.dart
 ```
 
-Expected: PASS.
-
-- [ ] **Step 4: Commit**
+Skip PaddleOCR integration test in CI (requires network and API quota):
 
 ```bash
-git add lib/src/core/api test/core/api
-git commit -m "feat: add mock cloud processing client"
+flutter test --tags=integration test/core/api/paddleocr_client_test.dart || true
+```
+
+Expected: mock tests PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add lib/src/core/api test/core/api .env
+git commit -m "feat: add hybrid cloud client (real PaddleOCR + mock enhance/clean/AI)"
 ```
 
 ---
@@ -650,9 +726,15 @@ Future<void> updateQuestionType(int id, QuestionType type);
 Future<void> updateFinalRepairedImagePath(int id, String path);
 ```
 
-- [ ] **Step 3: Wire save action**
+- [ ] **Step 3: Wire save action and trigger mock processing pipeline**
 
-After selecting a question, save it and navigate to library.
+After selecting a question, save it and navigate to library. After save, immediately trigger the mock cloud processing pipeline through a Riverpod notifier:
+
+1. `enhanceQuestion` → writes `enhancedImagePath` on the `MistakeQuestion` row.
+2. `cleanQuestion` → writes `cleanedImagePath`.
+3. `ocrQuestion` (real PaddleOCR API call) → creates an `OcrResult` row and optionally updates `questionNumber` and `questionType`. This step involves a real network call: submit image → poll job (5-30s typical) → download JSONL result. Multi-question mode submits the full paper image once; OCR results are split by question box coordinates after parsing.
+
+Each step runs independently and updates the database when its result is ready. The UI watches `processingStatus` and reflects the current stage. If OCR fails (network error, job failed, timeout), the row stays in its previous state and the user can still view, repair, and print. Mock enhance/clean steps resolve instantly; the real OCR step takes real time.
 
 - [ ] **Step 4: Run tests**
 
@@ -726,7 +808,7 @@ git commit -m "feat: add question library filters"
 - Modify: `lib/src/features/library/question_repository.dart`
 - Modify: `lib/src/core/api/mock_cloud_processing_client.dart`
 
-- [ ] **Step 1: Add tests for solution Markdown headings**
+- [ ] **Step 1: Add tests for solution Markdown headings and warnings**
 
 Assert generated Markdown includes:
 
@@ -736,6 +818,8 @@ Assert generated Markdown includes:
 - `## 易错点`
 - `## 同类题方法`
 - `## 不确定提示`
+
+Also assert that when the mock returns non-empty `warnings`, the `不确定提示` section contains the warning text, and when `warnings` is empty the section reads `暂无补充`.
 
 - [ ] **Step 2: Implement detail screen**
 
@@ -866,6 +950,12 @@ The layout must handle:
 - several short choice/fill-blank questions on one page without extra answer gaps.
 - extreme wide or narrow aspect ratios without distortion.
 
+Additional print rules:
+
+- User can reorder questions by dragging or up/down buttons before export. The final order is written to `PrintSet.questionIds`.
+- AI solution content is never embedded in the PDF, regardless of whether an `AiSolution` exists for the question. The PDF contains only question images and answer areas.
+- The paper size, title, and answer area mode are taken from user settings (Task 13) or the print builder UI.
+
 Use `printing` for preview/share.
 
 Expose a small testable PDF builder result that includes the generated bytes and page count so tests do not depend on visual inspection.
@@ -968,7 +1058,7 @@ Run:
 flutter run -d ios
 ```
 
-Expected: app launches and supports import, save to library, eraser repair, AI mock solution, and PDF preview.
+Expected: app launches and supports import, save to library (with real PaddleOCR processing), eraser repair, AI mock solution, and PDF preview. Verify OCR result appears in question detail within 30 seconds after save.
 
 - [ ] **Step 4: Record iOS platform blockers**
 
@@ -991,12 +1081,13 @@ Spec coverage:
 - Four-table local model is covered by Task 3.
 - No image editor beyond eraser is covered by Tasks 6 and 11.
 - Question-type PDF answer area is covered by Task 12.
-- Mock cloud OCR/AI and non-blocking local flow are covered by Tasks 5 and 7-10.
+- Real PaddleOCR integration and mock enhance/clean/AI are covered by Task 5.
+- Non-blocking local flow is covered by Tasks 7-10.
 
 Placeholder scan:
 
-- No task depends on a real PaddleOCR/Doubao backend.
-- Real backend integration is intentionally outside this plan and should get a separate plan.
+- OCR uses the real PaddleOCR-VL API. No mock OCR placeholder.
+- Image enhancement, hand-removal, and Doubao AI solution use mock services. Their real backend integration is intentionally outside this plan and should get a separate plan.
 
 Type consistency:
 
