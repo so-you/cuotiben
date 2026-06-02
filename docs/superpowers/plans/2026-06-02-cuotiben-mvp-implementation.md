@@ -23,6 +23,18 @@ MVP constraints from the confirmed spec:
 - Eraser-only repair. No full image editor, no brush system, no vector/line overlay, no crop/rotate editing after question selection.
 - PDF answer area is question-type based: choice/fill blank no extra answer area; short answer/essay get answer area.
 
+## Risk Controls
+
+The eraser canvas and large-image handling are the highest implementation risks. Do not leave them until the end.
+
+- Validate eraser drawing, image downsampling, and save-composition memory behavior immediately after database/routing setup.
+- Store printable images as files, never database blobs.
+- Generate a small thumbnail at import/save time and use thumbnails in list views.
+- Keep original and printable image paths separate from thumbnails.
+- If freehand eraser is not smooth enough on target devices, downgrade repair to simple white rectangle masking before building more UI around it.
+- Cloud mock services must mimic the real API shape: job returns URLs, client downloads or copies URL output into local files, and only local paths are written to the database.
+- E2E validation requires at least one configured platform first; missing Android SDK, simulator runtimes, or CocoaPods are environment blockers, not product logic blockers.
+
 ## File Structure
 
 Create or modify these paths:
@@ -34,6 +46,7 @@ Create or modify these paths:
 - `lib/src/core/theme/app_theme.dart`: restrained app theme.
 - `lib/src/core/models/enums.dart`: subject, grade level, question type, processing status.
 - `lib/src/core/files/app_file_store.dart`: app document directory and image copy helpers.
+- `lib/src/core/files/image_derivatives.dart`: thumbnail and print-image derivative policy.
 - `lib/src/core/db/app_database.dart`: Drift database and four table definitions.
 - `lib/src/core/db/app_database_provider.dart`: Riverpod database provider.
 - `lib/src/core/api/cloud_processing_client.dart`: API interface and job/result models.
@@ -47,6 +60,7 @@ Create or modify these paths:
 - `lib/src/features/settings/settings_screen.dart`: grade/subject/paper defaults.
 - `test/core/models/enums_test.dart`
 - `test/core/db/app_database_test.dart`
+- `test/core/files/image_derivatives_test.dart`
 - `test/core/api/mock_cloud_processing_client_test.dart`
 - `test/features/print/print_layout_policy_test.dart`
 - `test/widget/app_navigation_test.dart`
@@ -255,17 +269,22 @@ void main() {
         sourceType: 'gallery',
         sourcePaperImagePath: '/tmp/paper.jpg',
         originalQuestionImagePath: '/tmp/question.jpg',
+        thumbnailImagePath: '/tmp/question-thumb.jpg',
         subject: 'math',
         gradeLevel: 'senior_high',
         grade: '高二',
+        questionNumber: '21',
         questionType: 'short_answer',
+        cropRectJson: '{"x":0.1,"y":0.2,"width":0.7,"height":0.3}',
         processingStatus: 'pending',
       ),
     );
 
     final row = await db.mistakeQuestionsById(id).getSingle();
     expect(row.subject, 'math');
+    expect(row.questionNumber, '21');
     expect(row.questionType, 'short_answer');
+    expect(row.cropRectJson, contains('width'));
   });
 }
 ```
@@ -282,7 +301,32 @@ Expected: fails because database files do not exist.
 
 - [ ] **Step 3: Implement Drift tables**
 
-Create `lib/src/core/db/app_database.dart` with four tables: `mistake_questions`, `ocr_results`, `ai_solutions`, `print_sets`. Required fields must match the confirmed spec. Include this query method:
+Create `lib/src/core/db/app_database.dart` with four tables: `mistake_questions`, `ocr_results`, `ai_solutions`, `print_sets`. Required fields must match the confirmed spec.
+
+`MistakeQuestion` must include at minimum:
+
+- `sourceType`
+- `sourcePaperImagePath`
+- `originalQuestionImagePath`
+- `enhancedImagePath`
+- `cleanedImagePath`
+- `finalRepairedImagePath`
+- `thumbnailImagePath`
+- `subject`
+- `gradeLevel`
+- `grade`
+- `questionNumber`
+- `questionType`
+- `cropRectJson`
+- `tagsJson`
+- `note`
+- `processingStatus`
+- `createdAt`
+- `updatedAt`
+
+Keep the four-table MVP boundary. Do not add a paper table or edit-layer table.
+
+Include this query method:
 
 ```dart
 @DriftDatabase(tables: [MistakeQuestions, OcrResults, AiSolutions, PrintSets])
@@ -380,6 +424,11 @@ Implement:
 - Routes: `/`, `/capture/select`, `/library`, `/questions/:id`, `/questions/:id/repair`, `/print`, `/settings`.
 - Placeholder screens with stable titles and primary buttons.
 - A quiet mobile app theme with readable typography and no marketing landing page.
+- Riverpod provider skeleton:
+  - `appDatabaseProvider` owns the Drift database lifecycle.
+  - `questionRepositoryProvider` depends on `appDatabaseProvider`.
+  - `cloudProcessingClientProvider` depends on the mock client in MVP.
+  - Capture, library, detail, repair, and print screens use feature-local notifier providers; they do not instantiate repositories or clients directly.
 
 - [ ] **Step 4: Run routing test**
 
@@ -400,16 +449,134 @@ git commit -m "feat: add app shell and routes"
 
 ---
 
-### Task 5: File Store And Image Import Flow
+### Task 5: Mock Cloud Processing Client
+
+**Files:**
+- Create: `lib/src/core/api/cloud_processing_client.dart`
+- Create: `lib/src/core/api/mock_cloud_processing_client.dart`
+- Create: `test/core/api/mock_cloud_processing_client_test.dart`
+
+- [ ] **Step 1: Write mock API tests**
+
+Create tests asserting:
+
+- `detectPaperQuestions` returns at least one box.
+- `enhanceQuestion` returns a fake remote `enhancedImageUrl`.
+- `cleanQuestion` returns a fake remote `cleanedImageUrl` and confidence.
+- `downloadResultImage` copies a mock URL output into an app-local file and returns a local path.
+- `generateSolution` returns Markdown with fixed headings.
+
+- [ ] **Step 2: Implement API contracts**
+
+Define typed Dart classes for:
+
+```dart
+QuestionBox
+ImageProcessingResult
+OcrProcessingResult
+AiSolutionResult
+ProcessingJobStatus
+RemoteImageResult
+```
+
+The mock client must be deterministic and not call the network. It should still mimic the real integration shape: cloud steps produce URLs, then a download/copy step writes local files. This keeps the later real backend replacement focused on HTTP upload/download instead of changing app flow.
+
+- [ ] **Step 3: Run tests**
+
+Run:
+
+```bash
+flutter test test/core/api/mock_cloud_processing_client_test.dart
+```
+
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add lib/src/core/api test/core/api
+git commit -m "feat: add mock cloud processing client"
+```
+
+---
+
+### Task 6: Eraser Technical Spike
+
+**Files:**
+- Create: `lib/src/features/repair/eraser_canvas.dart`
+- Create: `lib/src/core/files/image_derivatives.dart`
+- Create: `test/core/files/image_derivatives_test.dart`
+- Create or modify: `test/features/repair/eraser_canvas_test.dart`
+
+- [ ] **Step 1: Define the image derivative policy**
+
+Write tests for:
+
+- list thumbnail max width is `400`.
+- repair canvas decode width is capped to a configured working size, initially `1600`.
+- PDF image max width is capped separately from the thumbnail.
+- derivative filenames are stable and do not overwrite original images.
+
+- [ ] **Step 2: Implement image derivative helpers**
+
+Implement a small policy layer for image sizes and filenames. The implementation can use Flutter/image APIs later, but the policy must exist before import and repair screens start depending on raw image paths.
+
+- [ ] **Step 3: Build eraser canvas POC**
+
+Create a reusable eraser canvas widget that supports:
+
+- loading a downsampled working image.
+- tracking continuous finger strokes with `CustomPainter` + pointer/gesture events.
+- drawing white strokes over a separate in-memory overlay.
+- saving by composing the working image and white overlay to bytes.
+- abandoning the edit without writing a new file.
+
+Record implementation notes in this task section if device testing shows frame drops or memory spikes. If freehand strokes are not viable on target devices, replace this task's output with white rectangle masking before continuing.
+
+- [ ] **Step 4: Validate spike**
+
+Run:
+
+```bash
+flutter test test/core/files/image_derivatives_test.dart test/features/repair/eraser_canvas_test.dart
+```
+
+If a real device is available, manually test one 5-15MB photographed paper image before implementing the full import flow.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/src/core/files lib/src/features/repair test
+git commit -m "feat: validate eraser repair spike"
+```
+
+---
+
+### Task 7: File Store, Permissions, And Image Import Flow
 
 **Files:**
 - Create: `lib/src/core/files/app_file_store.dart`
+- Modify: `android/app/src/main/AndroidManifest.xml`
+- Modify: `ios/Runner/Info.plist`
 - Modify: `lib/src/features/capture/capture_home_screen.dart`
 - Modify: `lib/src/features/capture/question_selection_screen.dart`
 
+- [ ] **Step 0: Configure and verify platform permissions**
+
+Configure camera and gallery permissions before wiring image import:
+
+- Android manifest includes camera permission and the media permissions needed for the selected picker/camera plugins on current Android versions.
+- iOS `Info.plist` includes `NSCameraUsageDescription` and `NSPhotoLibraryUsageDescription`.
+- Run a simulator/device smoke check for the permission prompt on whichever platform is configured locally.
+
 - [ ] **Step 1: Write file-store unit test**
 
-Create a test that copies a fixture image into an app-local `papers/` directory and returns a stable local path. Use a temporary directory and a small generated byte file.
+Create tests that:
+
+- copy a fixture image into an app-local `papers/` directory and return a stable local path.
+- copy a selected question image into `questions/`.
+- generate and store a max-width 400px thumbnail for library lists.
+- keep original image, printable image, and thumbnail paths distinct.
 
 - [ ] **Step 2: Implement `AppFileStore`**
 
@@ -418,8 +585,11 @@ Implement methods:
 ```dart
 Future<String> copyPaperImage(File source);
 Future<String> copyQuestionImage(File source);
+Future<String> createThumbnail(File source);
 Future<String> writeRepairedImageBytes(Uint8List bytes, String fileName);
 ```
+
+Question list screens must use thumbnails, not full-resolution question images.
 
 - [ ] **Step 3: Wire image import**
 
@@ -442,62 +612,13 @@ Expected: all tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/src/core/files lib/src/features/capture test
+git add android/app/src/main/AndroidManifest.xml ios/Runner/Info.plist lib/src/core/files lib/src/features/capture test
 git commit -m "feat: add image import and question selection"
 ```
 
 ---
 
-### Task 6: Mock Cloud Processing Client
-
-**Files:**
-- Create: `lib/src/core/api/cloud_processing_client.dart`
-- Create: `lib/src/core/api/mock_cloud_processing_client.dart`
-- Create: `test/core/api/mock_cloud_processing_client_test.dart`
-
-- [ ] **Step 1: Write mock API tests**
-
-Create tests asserting:
-
-- `detectPaperQuestions` returns at least one box.
-- `enhanceQuestion` returns an enhanced image path.
-- `cleanQuestion` returns a cleaned image path and confidence.
-- `generateSolution` returns Markdown with fixed headings.
-
-- [ ] **Step 2: Implement API contracts**
-
-Define typed Dart classes for:
-
-```dart
-QuestionBox
-ImageProcessingResult
-OcrProcessingResult
-AiSolutionResult
-ProcessingJobStatus
-```
-
-The mock client must be deterministic and not call network.
-
-- [ ] **Step 3: Run tests**
-
-Run:
-
-```bash
-flutter test test/core/api/mock_cloud_processing_client_test.dart
-```
-
-Expected: PASS.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add lib/src/core/api test/core/api
-git commit -m "feat: add mock cloud processing client"
-```
-
----
-
-### Task 7: Save Selected Questions To Library
+### Task 8: Save Selected Questions To Library
 
 **Files:**
 - Modify: `lib/src/features/capture/question_selection_screen.dart`
@@ -511,9 +632,12 @@ Test that saving a selected question creates a `MistakeQuestion` row with:
 
 - `sourcePaperImagePath`
 - `originalQuestionImagePath`
+- `thumbnailImagePath`
 - `subject` as `math` or `physics`
 - `gradeLevel`
+- `questionNumber`
 - `questionType`
+- `cropRectJson`
 - `processingStatus` as `pending`
 
 - [ ] **Step 2: Implement repository**
@@ -550,7 +674,7 @@ git commit -m "feat: save selected questions locally"
 
 ---
 
-### Task 8: Library List And Filters
+### Task 9: Library List And Filters
 
 **Files:**
 - Modify: `lib/src/features/library/question_library_screen.dart`
@@ -573,7 +697,7 @@ Add a query method that accepts nullable filter fields and orders newest first.
 Screen requirements:
 
 - dense list, not a marketing page.
-- thumbnail, subject, grade, question number, processing status.
+- thumbnail from `thumbnailImagePath`, subject, grade, question number, processing status.
 - segmented filters for math/physics and junior/senior high.
 - tapping a row opens question detail.
 
@@ -596,7 +720,7 @@ git commit -m "feat: add question library filters"
 
 ---
 
-### Task 9: Question Detail, OCR, And AI Solution
+### Task 10: Question Detail, OCR, And AI Solution
 
 **Files:**
 - Modify: `lib/src/features/repair/question_detail_screen.dart`
@@ -621,6 +745,7 @@ Show:
 - best available image: `finalRepairedImagePath`, then `cleanedImagePath`, then `enhancedImagePath`, then `originalQuestionImagePath`.
 - OCR summary if available.
 - editable question type control.
+- editable question number.
 - `答案解析` button.
 - `橡皮擦修复` button.
 
@@ -647,10 +772,11 @@ git commit -m "feat: add question detail and ai solution"
 
 ---
 
-### Task 10: Eraser-Only Repair
+### Task 11: Eraser-Only Repair
 
 **Files:**
 - Modify: `lib/src/features/repair/eraser_repair_screen.dart`
+- Modify: `lib/src/features/repair/eraser_canvas.dart`
 - Modify: `lib/src/features/library/question_repository.dart`
 - Modify: `lib/src/core/files/app_file_store.dart`
 
@@ -663,9 +789,11 @@ Test that saving repair updates only `finalRepairedImagePath` on `MistakeQuestio
 Implement a simple eraser-only flow:
 
 - load best available image.
-- user draws white eraser strokes over the image.
+- load a repair working-size image, not the raw full-resolution camera file.
+- user draws white eraser strokes over the image using the spike-tested canvas.
 - save composed image bytes to `finalRepairedImagePath`.
 - provide “放弃本次修复” that returns without changing the database.
+- keep the original question image, cleaned image, and thumbnail untouched.
 
 No restore brush, no shapes, no text, no line overlay, no crop, no rotate.
 
@@ -688,7 +816,7 @@ git commit -m "feat: add eraser-only repair"
 
 ---
 
-### Task 11: PDF Export
+### Task 12: PDF Export
 
 **Files:**
 - Create: `lib/src/features/print/print_layout_policy.dart`
@@ -711,6 +839,11 @@ void main() {
     expect(PrintLayoutPolicy.answerAreaHeight(QuestionType.shortAnswer, AnswerAreaMode.medium), greaterThan(0));
     expect(PrintLayoutPolicy.answerAreaHeight(QuestionType.essay, AnswerAreaMode.medium), greaterThan(0));
   });
+
+  test('mixed question pdf layout can produce non-empty pages', () async {
+    // Build 3 fixture questions with different aspect ratios and question types,
+    // then assert the returned PDF bytes are non-empty and reported page count is >= 1.
+  });
 }
 ```
 
@@ -725,9 +858,18 @@ Use `pdf` to create A4 portrait pages:
 - header: title, subject, date.
 - each question image scaled proportionally.
 - answer area only if `questionType.needsAnswerArea`.
+- downsample or use print-sized derivatives before embedding very large images.
 - footer: page number.
 
+The layout must handle:
+
+- a long/tall question image spanning pages if needed.
+- several short choice/fill-blank questions on one page without extra answer gaps.
+- extreme wide or narrow aspect ratios without distortion.
+
 Use `printing` for preview/share.
+
+Expose a small testable PDF builder result that includes the generated bytes and page count so tests do not depend on visual inspection.
 
 - [ ] **Step 4: Run tests**
 
@@ -748,7 +890,7 @@ git commit -m "feat: add question-type based pdf export"
 
 ---
 
-### Task 12: Settings And MVP Polish
+### Task 13: Settings And MVP Polish
 
 **Files:**
 - Modify: `lib/src/features/settings/settings_screen.dart`
@@ -792,7 +934,7 @@ git commit -m "feat: add settings and mvp states"
 
 ---
 
-### Task 13: End-To-End Validation
+### Task 14: End-To-End Validation
 
 **Files:**
 - Modify: only files that fail `flutter analyze`, `flutter test`, or Android/iOS smoke validation.
@@ -817,7 +959,11 @@ flutter test
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run Android smoke test**
+- [ ] **Step 3: Run at least one platform smoke test**
+
+Choose the locally configured platform first. On this machine, `flutter doctor` must be clean enough for the chosen target before this step.
+
+For Android:
 
 Run:
 
@@ -827,7 +973,7 @@ flutter run -d android
 
 Expected: app launches and supports import, save to library, eraser repair, AI mock solution, and PDF preview.
 
-- [ ] **Step 4: Run iOS smoke test**
+For iOS:
 
 Run:
 
@@ -836,6 +982,10 @@ flutter run -d ios
 ```
 
 Expected: same workflow works on iOS simulator or device.
+
+- [ ] **Step 4: Record missing platform blockers**
+
+If either Android or iOS cannot be run because SDKs, simulator runtimes, CocoaPods, signing, or device access are missing, record the exact `flutter doctor` blocker in the task notes and continue with the configured platform. Do not claim dual-platform E2E is complete until both environments are available.
 
 - [ ] **Step 5: Commit validation fixes**
 
@@ -852,9 +1002,9 @@ Spec coverage:
 
 - Target persona is covered by filters, settings, and AI prompt constraints.
 - Four-table local model is covered by Task 3.
-- No image editor beyond eraser is covered by Task 10.
-- Question-type PDF answer area is covered by Task 11.
-- Mock cloud OCR/AI and non-blocking local flow are covered by Tasks 6-9.
+- No image editor beyond eraser is covered by Tasks 6 and 11.
+- Question-type PDF answer area is covered by Task 12.
+- Mock cloud OCR/AI and non-blocking local flow are covered by Tasks 5 and 7-10.
 
 Placeholder scan:
 
